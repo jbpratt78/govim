@@ -10,6 +10,7 @@ package jsonrpc2
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -29,11 +30,10 @@ const (
 // Conn is a JSON RPC 2 client server connection.
 // Conn is bidirectional; it does not have a designated server or client end.
 type Conn struct {
-	seq         int64 // must only be accessed using atomic operations
-	stream      Stream
-	pendingMu   sync.Mutex // protects the pending map
-	pending     map[ID]chan *WireResponse
-	onCancelled CallCanceller
+	seq       int64 // must only be accessed using atomic operations
+	stream    Stream
+	pendingMu sync.Mutex // protects the pending map
+	pending   map[ID]chan *wireResponse
 }
 
 // Request is sent to a server to represent a Call or Notify operaton.
@@ -44,44 +44,21 @@ type Request struct {
 	done []func()
 
 	// The Wire values of the request.
-	WireRequest
+	wireRequest
 }
-
-// Canceller is the type for a function that can cancel an in progress request.
-type Canceller func(id ID)
-
-// CallCanceller is the type for a callback when an outgoing request is
-// has it's context cancelled.
-type CallCanceller func(context.Context, *Conn, ID)
 
 type constError string
 
 func (e constError) Error() string { return string(e) }
-
-// NewErrorf builds a Error struct for the supplied message and code.
-// If args is not empty, message and args will be passed to Sprintf.
-func NewErrorf(code int64, format string, args ...interface{}) *Error {
-	return &Error{
-		Code:    code,
-		Message: fmt.Sprintf(format, args...),
-	}
-}
 
 // NewConn creates a new connection object around the supplied stream.
 // You must call Run for the connection to be active.
 func NewConn(s Stream) *Conn {
 	conn := &Conn{
 		stream:  s,
-		pending: make(map[ID]chan *WireResponse),
+		pending: make(map[ID]chan *wireResponse),
 	}
 	return conn
-}
-
-// OnCancelled sets the callback used when an outgoing call request has
-// it's context cancelled when still in progress.
-// Only the last callback registered is used.
-func (c *Conn) OnCancelled(cancelled CallCanceller) {
-	c.onCancelled = cancelled
 }
 
 // Notify is called to send a notification request over the connection.
@@ -92,7 +69,7 @@ func (c *Conn) Notify(ctx context.Context, method string, params interface{}) (e
 	if err != nil {
 		return fmt.Errorf("marshalling notify parameters: %v", err)
 	}
-	request := &WireRequest{
+	request := &wireRequest{
 		Method: method,
 		Params: jsonParams,
 	}
@@ -103,7 +80,7 @@ func (c *Conn) Notify(ctx context.Context, method string, params interface{}) (e
 	ctx, done := event.StartSpan(ctx, request.Method,
 		tag.Method.Of(request.Method),
 		tag.RPCDirection.Of(tag.Outbound),
-		tag.RPCID.Of(request.ID.String()),
+		tag.RPCID.Of(fmt.Sprintf("%q", request.ID)),
 	)
 	defer func() {
 		recordStatus(ctx, err)
@@ -119,14 +96,14 @@ func (c *Conn) Notify(ctx context.Context, method string, params interface{}) (e
 // Call sends a request over the connection and then waits for a response.
 // If the response is not an error, it will be decoded into result.
 // result must be of a type you an pass to json.Unmarshal.
-func (c *Conn) Call(ctx context.Context, method string, params, result interface{}) (err error) {
+func (c *Conn) Call(ctx context.Context, method string, params, result interface{}) (_ ID, err error) {
 	// generate a new request identifier
-	id := ID{Number: atomic.AddInt64(&c.seq, 1)}
+	id := ID{number: atomic.AddInt64(&c.seq, 1)}
 	jsonParams, err := marshalToRaw(params)
 	if err != nil {
-		return fmt.Errorf("marshalling call parameters: %v", err)
+		return id, fmt.Errorf("marshalling call parameters: %v", err)
 	}
-	request := &WireRequest{
+	request := &wireRequest{
 		ID:     &id,
 		Method: method,
 		Params: jsonParams,
@@ -134,12 +111,12 @@ func (c *Conn) Call(ctx context.Context, method string, params, result interface
 	// marshal the request now it is complete
 	data, err := json.Marshal(request)
 	if err != nil {
-		return fmt.Errorf("marshalling call request: %v", err)
+		return id, fmt.Errorf("marshalling call request: %v", err)
 	}
 	ctx, done := event.StartSpan(ctx, request.Method,
 		tag.Method.Of(request.Method),
 		tag.RPCDirection.Of(tag.Outbound),
-		tag.RPCID.Of(request.ID.String()),
+		tag.RPCID.Of(fmt.Sprintf("%q", request.ID)),
 	)
 	defer func() {
 		recordStatus(ctx, err)
@@ -150,7 +127,7 @@ func (c *Conn) Call(ctx context.Context, method string, params, result interface
 	// are racing the response. Also add a buffer to rchan, so that if we get a
 	// wire response between the time this call is cancelled and id is deleted
 	// from c.pending, the send to rchan will not block.
-	rchan := make(chan *WireResponse, 1)
+	rchan := make(chan *wireResponse, 1)
 	c.pendingMu.Lock()
 	c.pending[id] = rchan
 	c.pendingMu.Unlock()
@@ -164,28 +141,24 @@ func (c *Conn) Call(ctx context.Context, method string, params, result interface
 	event.Record(ctx, tag.SentBytes.Of(n))
 	if err != nil {
 		// sending failed, we will never get a response, so don't leave it pending
-		return err
+		return id, err
 	}
 	// now wait for the response
 	select {
 	case response := <-rchan:
 		// is it an error response?
 		if response.Error != nil {
-			return response.Error
+			return id, response.Error
 		}
 		if result == nil || response.Result == nil {
-			return nil
+			return id, nil
 		}
 		if err := json.Unmarshal(*response.Result, result); err != nil {
-			return fmt.Errorf("unmarshalling result: %v", err)
+			return id, fmt.Errorf("unmarshalling result: %v", err)
 		}
-		return nil
+		return id, nil
 	case <-ctx.Done():
-		// Allow the handler to propagate the cancel.
-		if c.onCancelled != nil {
-			c.onCancelled(ctx, c, id)
-		}
-		return ctx.Err()
+		return id, ctx.Err()
 	}
 }
 
@@ -197,56 +170,59 @@ func (r *Request) IsNotify() bool {
 	return r.ID == nil
 }
 
-// Reply sends a reply to the given request.
-// You must call this exactly once for any given request.
-// If err is set then result will be ignored.
-// This will mark the request as done, triggering any done
-// handlers
-func (r *Request) Reply(ctx context.Context, result interface{}, err error) error {
-	if r.done == nil {
-		return fmt.Errorf("reply invoked more than once")
-	}
-
-	defer func() {
-		recordStatus(ctx, err)
-		for i := len(r.done); i > 0; i-- {
-			r.done[i-1]()
+func replier(r *Request) Replier {
+	return func(ctx context.Context, result interface{}, err error) error {
+		if r.done == nil {
+			return fmt.Errorf("reply invoked more than once")
 		}
-		r.done = nil
-	}()
 
-	if r.IsNotify() {
+		defer func() {
+			recordStatus(ctx, err)
+			for i := len(r.done); i > 0; i-- {
+				r.done[i-1]()
+			}
+			r.done = nil
+		}()
+
+		if r.IsNotify() {
+			return nil
+		}
+
+		var raw *json.RawMessage
+		if err == nil {
+			raw, err = marshalToRaw(result)
+		}
+		response := &wireResponse{
+			Result: raw,
+			ID:     r.ID,
+		}
+		if err != nil {
+			if callErr, ok := err.(*wireError); ok {
+				response.Error = callErr
+			} else {
+				response.Error = &wireError{Message: err.Error()}
+				var wrapped *wireError
+				if errors.As(err, &wrapped) {
+					// if we wrapped a wire error, keep the code from the wrapped error
+					// but the message from the outer error
+					response.Error.Code = wrapped.Code
+				}
+			}
+		}
+		data, err := json.Marshal(response)
+		if err != nil {
+			return err
+		}
+		n, err := r.conn.stream.Write(ctx, data)
+		event.Record(ctx, tag.SentBytes.Of(n))
+
+		if err != nil {
+			// TODO(iancottrell): if a stream write fails, we really need to shut down
+			// the whole stream
+			return err
+		}
 		return nil
 	}
-
-	var raw *json.RawMessage
-	if err == nil {
-		raw, err = marshalToRaw(result)
-	}
-	response := &WireResponse{
-		Result: raw,
-		ID:     r.ID,
-	}
-	if err != nil {
-		if callErr, ok := err.(*Error); ok {
-			response.Error = callErr
-		} else {
-			response.Error = NewErrorf(0, "%s", err)
-		}
-	}
-	data, err := json.Marshal(response)
-	if err != nil {
-		return err
-	}
-	n, err := r.conn.stream.Write(ctx, data)
-	event.Record(ctx, tag.SentBytes.Of(n))
-
-	if err != nil {
-		// TODO(iancottrell): if a stream write fails, we really need to shut down
-		// the whole stream
-		return err
-	}
-	return nil
 }
 
 // OnReply adds a done callback to the request.
@@ -258,17 +234,6 @@ func (r *Request) Reply(ctx context.Context, result interface{}, err error) erro
 // at any time.
 func (r *Request) OnReply(do func()) {
 	r.done = append(r.done, do)
-}
-
-// combined has all the fields of both Request and Response.
-// We can decode this and then work out which it is.
-type combined struct {
-	VersionTag VersionTag       `json:"jsonrpc"`
-	ID         *ID              `json:"id,omitempty"`
-	Method     string           `json:"method"`
-	Params     *json.RawMessage `json:"params,omitempty"`
-	Result     *json.RawMessage `json:"result,omitempty"`
-	Error      *Error           `json:"error,omitempty"`
 }
 
 // Run blocks until the connection is terminated, and returns any error that
@@ -285,7 +250,7 @@ func (c *Conn) Run(runCtx context.Context, handler Handler) error {
 			return err
 		}
 		// read a combined message
-		msg := &combined{}
+		msg := &wireCombined{}
 		if err := json.Unmarshal(data, msg); err != nil {
 			// a badly formed message arrived, log it and continue
 			// we trust the stream to have isolated the error to just this message
@@ -298,7 +263,7 @@ func (c *Conn) Run(runCtx context.Context, handler Handler) error {
 			reqCtx, spanDone := event.StartSpan(runCtx, msg.Method,
 				tag.Method.Of(msg.Method),
 				tag.RPCDirection.Of(tag.Inbound),
-				tag.RPCID.Of(msg.ID.String()),
+				tag.RPCID.Of(fmt.Sprintf("%q", msg.ID)),
 			)
 			event.Record(reqCtx,
 				tag.Started.Of(1),
@@ -306,7 +271,7 @@ func (c *Conn) Run(runCtx context.Context, handler Handler) error {
 
 			req := &Request{
 				conn: c,
-				WireRequest: WireRequest{
+				wireRequest: wireRequest{
 					VersionTag: msg.VersionTag,
 					Method:     msg.Method,
 					Params:     msg.Params,
@@ -315,7 +280,7 @@ func (c *Conn) Run(runCtx context.Context, handler Handler) error {
 			}
 			req.OnReply(func() { spanDone() })
 
-			if err := handler(reqCtx, req); err != nil {
+			if err := handler(reqCtx, replier(req), req); err != nil {
 				// delivery failed, not much we can do
 				event.Error(reqCtx, "jsonrpc2 message delivery failed", err)
 			}
@@ -326,7 +291,7 @@ func (c *Conn) Run(runCtx context.Context, handler Handler) error {
 			rchan, ok := c.pending[*msg.ID]
 			c.pendingMu.Unlock()
 			if ok {
-				response := &WireResponse{
+				response := &wireResponse{
 					Result: msg.Result,
 					Error:  msg.Error,
 					ID:     msg.ID,

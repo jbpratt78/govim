@@ -24,7 +24,11 @@ type Editor struct {
 	// construction, so do not require synchronization.
 	server protocol.Server
 	client *Client
-	ws     *Workspace
+
+	// ws represents the single workspace opened by the Editor.
+	//
+	// TODO: support multiple workspaces
+	ws *Workspace
 
 	// Since this editor is intended just for testing, we use very coarse
 	// locking.
@@ -37,6 +41,17 @@ type Editor struct {
 	events      []interface{}
 	// Capabilities / Options
 	serverCapabilities protocol.ServerCapabilities
+
+	// Env is the editor-level environment config associated with the "gopls"
+	// section of the Client's Configuration response. It is initialised with
+	// sane defaults. Any change to Editor config like Env must be followed by
+	// a call to Server.DidChangeConfiguration
+	Env *map[string]string
+
+	// Matcher is the editor-level matcher associated with the "gopls" section
+	// of the Client's Configuration response. Any change to Editor config like
+	// Matcher must be followed by a call to Server.DidChangeConfiguration
+	Matcher *string
 }
 
 type buffer struct {
@@ -70,10 +85,16 @@ func NewConnectedEditor(ctx context.Context, ws *Workspace, conn *jsonrpc2.Conn)
 
 // NewEditor Creates a new Editor.
 func NewEditor(ws *Workspace) *Editor {
-	return &Editor{
+	e := &Editor{
 		buffers: make(map[string]buffer),
 		ws:      ws,
 	}
+	defaultEnv := map[string]string{
+		"GOPATH":      ws.GOPATH(),
+		"GO111MODULE": "on",
+	}
+	e.Env = &defaultEnv
+	return e
 }
 
 // Shutdown issues the 'shutdown' LSP notification.
@@ -101,15 +122,6 @@ func (e *Editor) Exit(ctx context.Context) error {
 // Client returns the LSP client for this editor.
 func (e *Editor) Client() *Client {
 	return e.client
-}
-
-func (e *Editor) configuration() map[string]interface{} {
-	return map[string]interface{}{
-		"env": map[string]interface{}{
-			"GOPATH":      e.ws.GOPATH(),
-			"GO111MODULE": "on",
-		},
-	}
 }
 
 func (e *Editor) initialize(ctx context.Context) error {
@@ -488,6 +500,27 @@ func (e *Editor) GoToDefinition(ctx context.Context, path string, pos Pos) (stri
 	return newPath, newPos, nil
 }
 
+// Symbol performs a workspace symbol search using query
+func (e *Editor) Symbol(ctx context.Context, query string) ([]SymbolInformation, error) {
+	params := &protocol.WorkspaceSymbolParams{}
+	params.Query = query
+
+	resp, err := e.server.Symbol(ctx, params)
+	if err != nil {
+		return nil, fmt.Errorf("symbol: %v", err)
+	}
+	var res []SymbolInformation
+	for _, si := range resp {
+		newLoc := e.ws.FromProtocolLocation(si.Location)
+		res = append(res, SymbolInformation{
+			Name:     si.Name,
+			Kind:     si.Kind,
+			Location: newLoc,
+		})
+	}
+	return res, nil
+}
+
 // OrganizeImports requests and performs the source.organizeImports codeAction.
 func (e *Editor) OrganizeImports(ctx context.Context, path string) error {
 	if e.server == nil {
@@ -558,4 +591,19 @@ func (e *Editor) checkBufferPosition(path string, pos Pos) error {
 		return fmt.Errorf("position %v is invalid in buffer %q", pos, path)
 	}
 	return nil
+}
+
+// configuration is the derived configuration returned by Client.Configuration
+// for the "gopls" Section ConfigurationItem
+func (e *Editor) configuration() map[string]interface{} {
+	res := make(map[string]interface{})
+	// TODO: ideally the options handling in internal/lsp/source/options.go
+	// would export a type that defines the structure of options expected by
+	// gopls.  Thereby obviating the need for hardcoding of keys below (which
+	// would also make the code generation of configuration documentation
+	// possible as a nice side effect). Refactor the following hard-coding when
+	// such a change is made
+	res["env"] = e.Env
+	res["matcher"] = e.Matcher
+	return res
 }

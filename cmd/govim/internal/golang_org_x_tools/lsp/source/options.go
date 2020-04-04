@@ -86,6 +86,7 @@ func DefaultOptions() Options {
 			HoverKind:               FullDocumentation,
 			LinkTarget:              "pkg.go.dev",
 			Matcher:                 Fuzzy,
+			SymbolMatcher:           Fuzzy,
 			DeepCompletion:          true,
 			UnimportedCompletion:    true,
 			CompletionDocumentation: true,
@@ -163,6 +164,9 @@ type UserOptions struct {
 
 	// Matcher specifies the type of matcher to use for completion requests.
 	Matcher Matcher
+
+	// SymbolMatcher specifies the type of matcher to user for symbol requests
+	SymbolMatcher Matcher
 
 	// DeepCompletion allows completion to perform nested searches through
 	// possible candidates.

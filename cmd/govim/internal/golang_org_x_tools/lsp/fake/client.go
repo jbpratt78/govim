@@ -6,6 +6,7 @@ package fake
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/govim/govim/cmd/govim/internal/golang_org_x_tools/lsp/protocol"
 )
@@ -78,8 +79,20 @@ func (c *Client) WorkspaceFolders(context.Context) ([]protocol.WorkspaceFolder, 
 	return []protocol.WorkspaceFolder{}, nil
 }
 
-func (c *Client) Configuration(context.Context, *protocol.ParamConfiguration) ([]interface{}, error) {
-	return []interface{}{c.configuration()}, nil
+func (c *Client) Configuration(ctx context.Context, params *protocol.ParamConfiguration) ([]interface{}, error) {
+	// We should always receive at least one ConfigurationItem corresponding to
+	// the "gopls" Section. The Editor's configuration is associated with that
+	// section. Assert that that is the case so that we are forced to make
+	// changes here if that situation changes
+	minLen := 1
+	if l := len(params.Items); l < minLen {
+		panic(fmt.Errorf("got %v items; expected at least %v", l, minLen))
+	}
+	wantSec := "gopls"
+	if sec := params.Items[0].Section; sec != "gopls" {
+		panic(fmt.Errorf("the first ConfigurationItem has section %q; expected %q", sec, wantSec))
+	}
+	return []interface{}{c.Editor.configuration()}, nil
 }
 
 func (c *Client) RegisterCapability(context.Context, *protocol.RegistrationParams) error {

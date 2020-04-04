@@ -9,6 +9,8 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/govim/govim/cmd/govim/internal/golang_org_x_tools/lsp/fuzzy"
@@ -18,9 +20,38 @@ import (
 
 const maxSymbols = 100
 
+type symbolOption string
+
+const (
+	optionSeparator                                   = "::"
+	symbolOptionWorkspaceOnly            symbolOption = "workspaceOnly"
+	symbolOptionNonWorkspaceExportedOnly symbolOption = "nonWorkspaceExportedOnly"
+)
+
 func WorkspaceSymbols(ctx context.Context, views []View, query string) ([]protocol.SymbolInformation, error) {
 	ctx, done := event.StartSpan(ctx, "source.WorkspaceSymbols")
 	defer done()
+
+	var workspaceOnly bool
+	var nonWorkspaceExportedOnly bool
+
+	var queryParts []string
+	for _, part := range strings.Fields(query) {
+		if ok, v := tokenIsOption(part, symbolOptionWorkspaceOnly); ok {
+			if b, err := strconv.ParseBool(v); err == nil {
+				workspaceOnly = b
+			}
+			continue
+		}
+		if ok, v := tokenIsOption(part, symbolOptionNonWorkspaceExportedOnly); ok {
+			if b, err := strconv.ParseBool(v); err == nil {
+				nonWorkspaceExportedOnly = b
+			}
+			continue
+		}
+		queryParts = append(queryParts, part)
+	}
+	query = strings.Join(queryParts, " ")
 
 	seen := make(map[string]struct{})
 	var symbols []protocol.SymbolInformation
@@ -30,8 +61,39 @@ outer:
 		if err != nil {
 			return nil, err
 		}
-		matcher := makeMatcher(view.Options().Matcher, query)
+		workspacePkgs, err := view.Snapshot().WorkspacePackages(ctx)
+		if err != nil {
+			return nil, err
+		}
+		type knownPkg struct {
+			PackageHandle
+			isInWorkspace bool
+		}
+		var toSearch []knownPkg
+		// Create a slice of packages to search. This slice is sorted such that
+		// workspace packages appear first. That way if we exhaust the symbol
+		// limit defined by maxSymbols we will have returned symbols "closest" to
+		// the code the user is working on.
 		for _, ph := range knownPkgs {
+			pkgInWorkspace := false
+			for _, p := range workspacePkgs {
+				if p == ph {
+					pkgInWorkspace = true
+				}
+			}
+			if workspaceOnly && !pkgInWorkspace {
+				continue
+			}
+			toSearch = append(toSearch, knownPkg{
+				PackageHandle: ph,
+				isInWorkspace: pkgInWorkspace,
+			})
+		}
+		sort.Slice(toSearch, func(i, j int) bool {
+			return toSearch[i].isInWorkspace
+		})
+		matcher := makeMatcher(view.Options().SymbolMatcher, query)
+		for _, ph := range toSearch {
 			pkg, err := ph.Check(ctx)
 			if err != nil {
 				return nil, err
@@ -45,7 +107,7 @@ outer:
 				if err != nil {
 					return nil, err
 				}
-				for _, si := range findSymbol(file.Decls, pkg.GetTypesInfo(), matcher) {
+				for _, si := range findSymbol(file.Decls, pkg.GetTypesInfo(), matcher, pkg.PkgPath(), nonWorkspaceExportedOnly && !ph.isInWorkspace) {
 					mrng, err := posToMappedRange(view, pkg, si.node.Pos(), si.node.End())
 					if err != nil {
 						event.Error(ctx, "Error getting mapped range for node", err)
@@ -72,6 +134,12 @@ outer:
 		}
 	}
 	return symbols, nil
+}
+
+func tokenIsOption(token string, option symbolOption) (bool, string) {
+	pref := string(option) + optionSeparator
+	match := strings.HasPrefix(token, pref)
+	return match, strings.TrimPrefix(token, pref)
 }
 
 type symbolInformation struct {
@@ -101,18 +169,19 @@ func makeMatcher(m Matcher, query string) matcherFunc {
 	}
 }
 
-func findSymbol(decls []ast.Decl, info *types.Info, matcher matcherFunc) []symbolInformation {
+func findSymbol(decls []ast.Decl, info *types.Info, matcher matcherFunc, prefix string, exportedOnly bool) []symbolInformation {
 	var result []symbolInformation
 	for _, decl := range decls {
 		switch decl := decl.(type) {
 		case *ast.FuncDecl:
-			if matcher(decl.Name.Name) {
+			target := prefix + "." + decl.Name.Name
+			if (!exportedOnly || decl.Name.IsExported()) && matcher(target) {
 				kind := protocol.Function
 				if decl.Recv != nil {
 					kind = protocol.Method
 				}
 				result = append(result, symbolInformation{
-					name: decl.Name.Name,
+					name: target,
 					kind: kind,
 					node: decl.Name,
 				})
@@ -121,9 +190,10 @@ func findSymbol(decls []ast.Decl, info *types.Info, matcher matcherFunc) []symbo
 			for _, spec := range decl.Specs {
 				switch spec := spec.(type) {
 				case *ast.TypeSpec:
-					if matcher(spec.Name.Name) {
+					target := prefix + "." + spec.Name.Name
+					if (!exportedOnly || spec.Name.IsExported()) && matcher(target) {
 						result = append(result, symbolInformation{
-							name: spec.Name.Name,
+							name: target,
 							kind: typeToKind(info.TypeOf(spec.Type)),
 							node: spec.Name,
 						})
@@ -131,7 +201,7 @@ func findSymbol(decls []ast.Decl, info *types.Info, matcher matcherFunc) []symbo
 					switch st := spec.Type.(type) {
 					case *ast.StructType:
 						for _, field := range st.Fields.List {
-							result = append(result, findFieldSymbol(field, protocol.Field, matcher)...)
+							result = append(result, findFieldSymbol(field, protocol.Field, matcher, target, exportedOnly)...)
 						}
 					case *ast.InterfaceType:
 						for _, field := range st.Methods.List {
@@ -139,18 +209,19 @@ func findSymbol(decls []ast.Decl, info *types.Info, matcher matcherFunc) []symbo
 							if len(field.Names) == 0 {
 								kind = protocol.Interface
 							}
-							result = append(result, findFieldSymbol(field, kind, matcher)...)
+							result = append(result, findFieldSymbol(field, kind, matcher, target, exportedOnly)...)
 						}
 					}
 				case *ast.ValueSpec:
 					for _, name := range spec.Names {
-						if matcher(name.Name) {
+						target := prefix + "." + name.Name
+						if (!exportedOnly || name.IsExported()) && matcher(target) {
 							kind := protocol.Variable
 							if decl.Tok == token.CONST {
 								kind = protocol.Constant
 							}
 							result = append(result, symbolInformation{
-								name: name.Name,
+								name: target,
 								kind: kind,
 								node: name,
 							})
@@ -190,14 +261,15 @@ func typeToKind(typ types.Type) protocol.SymbolKind {
 	return protocol.Variable
 }
 
-func findFieldSymbol(field *ast.Field, kind protocol.SymbolKind, matcher matcherFunc) []symbolInformation {
+func findFieldSymbol(field *ast.Field, kind protocol.SymbolKind, matcher matcherFunc, prefix string, exportedOnly bool) []symbolInformation {
 	var result []symbolInformation
 
 	if len(field.Names) == 0 {
 		name := types.ExprString(field.Type)
-		if matcher(name) {
+		target := prefix + "." + name
+		if (!exportedOnly || token.IsExported(name)) && matcher(target) {
 			result = append(result, symbolInformation{
-				name: name,
+				name: target,
 				kind: kind,
 				node: field,
 			})
@@ -206,9 +278,10 @@ func findFieldSymbol(field *ast.Field, kind protocol.SymbolKind, matcher matcher
 	}
 
 	for _, name := range field.Names {
-		if matcher(name.Name) {
+		target := prefix + "." + name.Name
+		if (!exportedOnly || name.IsExported()) && matcher(target) {
 			result = append(result, symbolInformation{
-				name: name.Name,
+				name: target,
 				kind: kind,
 				node: name,
 			})

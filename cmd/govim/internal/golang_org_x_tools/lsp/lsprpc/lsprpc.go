@@ -236,7 +236,7 @@ func QueryServerState(ctx context.Context, network, address string) (*ServerStat
 	serverConn := jsonrpc2.NewConn(jsonrpc2.NewHeaderStream(netConn, netConn))
 	go serverConn.Run(ctx, jsonrpc2.MethodNotFound)
 	var state ServerState
-	if err := serverConn.Call(ctx, sessionsMethod, nil, &state); err != nil {
+	if err := protocol.Call(ctx, serverConn, sessionsMethod, nil, &state); err != nil {
 		return nil, fmt.Errorf("querying server state: %v", err)
 	}
 	return &state, nil
@@ -281,7 +281,7 @@ func (f *Forwarder) ServeStream(ctx context.Context, stream jsonrpc2.Stream) err
 		hreq.Logfile = di.Logfile
 		hreq.DebugAddr = di.ListenedDebugAddress
 	}
-	if err := serverConn.Call(ctx, handshakeMethod, hreq, &hresp); err != nil {
+	if err := protocol.Call(ctx, serverConn, handshakeMethod, hreq, &hresp); err != nil {
 		event.Error(ctx, "forwarder: gopls handshake failed", err)
 	}
 	if hresp.GoplsPath != f.goplsPath {
@@ -416,7 +416,7 @@ func OverrideExitFuncsForTest() func() {
 // instance from exiting. In the future it may also intercept 'shutdown' to
 // provide more graceful shutdown of the client connection.
 func forwarderHandler(handler jsonrpc2.Handler) jsonrpc2.Handler {
-	return func(ctx context.Context, r *jsonrpc2.Request) error {
+	return func(ctx context.Context, reply jsonrpc2.Replier, r *jsonrpc2.Request) error {
 		// TODO(golang.org/issues/34111): we should more gracefully disconnect here,
 		// once that process exists.
 		if r.Method == "exit" {
@@ -424,9 +424,9 @@ func forwarderHandler(handler jsonrpc2.Handler) jsonrpc2.Handler {
 			// reply nil here to consume the message: in
 			// tests, ForwarderExitFunc may be overridden to something that doesn't
 			// exit the process.
-			return r.Reply(ctx, nil, nil)
+			return reply(ctx, nil, nil)
 		}
-		return handler(ctx, r)
+		return handler(ctx, reply, r)
 	}
 }
 
@@ -486,12 +486,12 @@ const (
 )
 
 func handshaker(client *debugClient, goplsPath string, handler jsonrpc2.Handler) jsonrpc2.Handler {
-	return func(ctx context.Context, r *jsonrpc2.Request) error {
+	return func(ctx context.Context, reply jsonrpc2.Replier, r *jsonrpc2.Request) error {
 		switch r.Method {
 		case handshakeMethod:
 			var req handshakeRequest
 			if err := json.Unmarshal(*r.Params, &req); err != nil {
-				sendError(ctx, r, err)
+				sendError(ctx, reply, r, err)
 				return nil
 			}
 			client.debugAddress = req.DebugAddr
@@ -508,7 +508,7 @@ func handshaker(client *debugClient, goplsPath string, handler jsonrpc2.Handler)
 				resp.DebugAddr = di.ListenedDebugAddress
 			}
 
-			return r.Reply(ctx, resp, nil)
+			return reply(ctx, resp, nil)
 		case sessionsMethod:
 			resp := ServerState{
 				GoplsPath:       goplsPath,
@@ -526,17 +526,15 @@ func handshaker(client *debugClient, goplsPath string, handler jsonrpc2.Handler)
 					})
 				}
 			}
-			return r.Reply(ctx, resp, nil)
+			return reply(ctx, resp, nil)
 		}
-		return handler(ctx, r)
+		return handler(ctx, reply, r)
 	}
 }
 
-func sendError(ctx context.Context, req *jsonrpc2.Request, err error) {
-	if _, ok := err.(*jsonrpc2.Error); !ok {
-		err = jsonrpc2.NewErrorf(jsonrpc2.CodeParseError, "%v", err)
-	}
-	if err := req.Reply(ctx, nil, err); err != nil {
+func sendError(ctx context.Context, reply jsonrpc2.Replier, req *jsonrpc2.Request, err error) {
+	err = fmt.Errorf("%w: %v", jsonrpc2.ErrParse, err)
+	if err := reply(ctx, nil, err); err != nil {
 		event.Error(ctx, "", err)
 	}
 }

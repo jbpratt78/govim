@@ -243,3 +243,17 @@ func (w *Workspace) removeAll() error {
 func (w *Workspace) Close() error {
 	return w.removeAll()
 }
+
+// FromProtocolLocation returns an editor-friendly Location from loc
+func (w *Workspace) FromProtocolLocation(loc protocol.Location) Location {
+	path := w.URIToPath(loc.URI)
+	newStart := fromProtocolPosition(loc.Range.Start)
+	newEnd := fromProtocolPosition(loc.Range.End)
+	return Location{
+		Path: path,
+		Range: Range{
+			Start: newStart,
+			End:   newEnd,
+		},
+	}
+}
