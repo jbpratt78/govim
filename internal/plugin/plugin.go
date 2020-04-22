@@ -1,3 +1,4 @@
+// https://raw.githubusercontent.com/govim/govim/master/internal/plugin/plugin.go
 package plugin
 
 import (
