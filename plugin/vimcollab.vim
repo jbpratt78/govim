@@ -376,15 +376,23 @@ endfunction
 command -bar GOVIMPluginInstall echom "Installed to ".s:install(1)
 command -bar GOVIMLogfilePaths echom "Vim channel logfile: ".s:ch_logfile | echom "govim logfile: ".s:govim_logfile
 
-function s:install()
+function s:install(force)
   let oldpath = getcwd()
-  execute "cd ".s:plugindir
   " TODO: make work on Windows
   let commit = trim(system("git rev-parse HEAD 2>&1"))
   if v:shell_error
     throw commit
   endif
-  let targetdir = s:plugindir."/cmd/govim/.bin/".commit."/"
+  let targetdir = s:plugindir."/cmd/vimcollab/.bin/".commit."/"
+  if a:force || $GOVIM_ALWAYS_INSTALL == "true" || !filereadable(targetdir."govim")
+    echom "Installing vimcollab"
+    call feedkeys(" ") " to prevent press ENTER to continue
+    " TODO: make work on Windows
+    let install = system("env GO111MODULE=on GOBIN=".shellescape(targetdir)." go install github.com/jbpratt78/vimcollab/cmd/vimcollab 2>&1")
+    if v:shell_error
+      throw install
+    endif
+  endif
   execute "cd ".oldpath
   return targetdir
 endfunction
@@ -394,10 +402,10 @@ let opts = {"in_mode": "json", "out_mode": "json", "err_mode": "json", "callback
 if $GOVIMTEST_SOCKET != ""
   let s:channel = ch_open($GOVIMTEST_SOCKET, opts)
 else
-  let targetdir = s:install()
+  let targetdir = s:install(0)
   let start = $GOVIM_RUNCMD
   if start == ""
-    let start = targetdir."govim "
+    let start = targetdir."vimcollab"
   endif
   let opts.exit_cb = function("s:govimExit")
   let job = job_start(start, opts)

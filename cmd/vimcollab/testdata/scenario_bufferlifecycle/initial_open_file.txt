@@ -1,0 +1,14 @@
+# Test that opening Vim with a non .go file works and that
+# we can save that file
+
+vim expr 'bufname(\"\")'
+stdout '^"test.txt"$'
+! stderr .+
+vim ex 'w'
+
+-- test.txt --
+An empty file
+-- vim_config.json --
+{
+	"InitialFile": "test.txt"
+}

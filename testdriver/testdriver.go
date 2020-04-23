@@ -23,8 +23,8 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/govim/govim"
-	"github.com/govim/govim/internal/textutil"
 	"github.com/govim/govim/testsetup"
+	"github.com/jbpratt78/vimcollab/internal/textutil"
 	"github.com/rogpeppe/go-internal/semver"
 	"github.com/rogpeppe/go-internal/testscript"
 	"gopkg.in/retry.v1"
@@ -159,10 +159,10 @@ func NewTestDriver(c *Config) (*TestDriver, error) {
 	var srcVimrc, dstVimrc string
 	switch flav {
 	case govim.FlavorVim:
-		srcVimrc = filepath.Join(c.GovimPath, "cmd", "govim", "config", "minimal.vimrc")
+		srcVimrc = filepath.Join(c.GovimPath, "cmd", "vimcollab", "config", "minimal.vimrc")
 		dstVimrc = filepath.Join(c.TestHomePath, ".vimrc")
 	case govim.FlavorGvim:
-		srcVimrc = filepath.Join(c.GovimPath, "cmd", "govim", "config", "minimal.gvimrc")
+		srcVimrc = filepath.Join(c.GovimPath, "cmd", "vimcollab", "config", "minimal.gvimrc")
 		dstVimrc = filepath.Join(c.TestHomePath, ".gvimrc")
 	default:
 		return nil, fmt.Errorf("need to add vimrc behaviour for flavour %v", flav)
