@@ -1,0 +1,5 @@
+# Test saving an empty file as a non .go file works
+
+vim ex 'w nongo.txt'
+! stdout .+
+! stderr .+

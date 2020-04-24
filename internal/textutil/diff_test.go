@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/govim/govim/internal/textutil"
+	"github.com/jbpratt78/vimcollab/internal/textutil"
 )
 
 var diffTests = []struct {
