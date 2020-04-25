@@ -31,12 +31,15 @@ func (v *vimstate) joinSession(flags govim.CommandFlags, args ...string) error {
 
 	v.client.conn = conn
 
-	recvBuf := make([]byte, 1024)
-
-	_, err = conn.Read(recvBuf[:]) // recv data
+	// Reading location to load from the server
+	// I don't exactly like this solution but it works currently.
+	// 255 bytes is the max file name size on most file systems
+	recvBuf := make([]byte, 255)
+	_, err = conn.Read(recvBuf[:])
 	if err != nil {
 		return fmt.Errorf("read error: %v", err)
 	}
+
 	v.client.wg.Add(1)
 	go v.handleClientUpdates()
 

@@ -173,5 +173,6 @@ func (g *govimplugin) Shutdown() error {
 	close(g.inShutdown)
 	close(g.bufferUpdates)
 
+	// Probably need to also close any connections here
 	return nil
 }

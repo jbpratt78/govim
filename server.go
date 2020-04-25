@@ -52,17 +52,6 @@ func (v *vimstate) endSesssion(flags govim.CommandFlags, args ...string) error {
 	return nil
 }
 
-func (v *vimstate) handleServerUpdates(conn net.Conn) {
-	defer v.server.wg.Done()
-
-	for event := range v.bufferUpdates {
-		_, err := conn.Write(event.contents)
-		if err != nil {
-			v.Logf(err.Error())
-		}
-	}
-}
-
 // TODO: add deadline
 func (v *vimstate) serve() {
 	defer v.server.wg.Done()
@@ -77,7 +66,7 @@ func (v *vimstate) serve() {
 		}
 	}
 
-	// get current file
+	// get current file and send it to connecting client
 	cb, _, _ := v.cursorPos()
 	if _, err = conn.Write([]byte(cb.URI().Filename())); err != nil {
 		panic(fmt.Errorf("failed to write filename for client loading location: %v", err))
@@ -85,4 +74,15 @@ func (v *vimstate) serve() {
 
 	v.server.wg.Add(1)
 	go v.handleServerUpdates(conn)
+}
+
+func (v *vimstate) handleServerUpdates(conn net.Conn) {
+	defer v.server.wg.Done()
+
+	for event := range v.bufferUpdates {
+		_, err := conn.Write(event.contents)
+		if err != nil {
+			v.Logf(err.Error())
+		}
+	}
 }
