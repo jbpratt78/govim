@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net"
 	"sync"
 
@@ -66,18 +67,22 @@ func (v *vimstate) handleServerUpdates(conn net.Conn) {
 func (v *vimstate) serve() {
 	defer v.server.wg.Done()
 
-	for {
-		conn, err := v.server.listener.Accept()
-		if err != nil {
-			select {
-			case <-v.server.quit:
-				return
-			default:
-				panic(err)
-			}
+	conn, err := v.server.listener.Accept()
+	if err != nil {
+		select {
+		case <-v.server.quit:
+			return
+		default:
+			panic(err)
 		}
-
-		v.server.wg.Add(1)
-		go v.handleServerUpdates(conn)
 	}
+
+	// get current file
+	cb, _, _ := v.cursorPos()
+	if _, err = conn.Write([]byte(cb.URI().Filename())); err != nil {
+		panic(fmt.Errorf("failed to write filename for client loading location: %v", err))
+	}
+
+	v.server.wg.Add(1)
+	go v.handleServerUpdates(conn)
 }

@@ -159,10 +159,10 @@ func NewTestDriver(c *Config) (*TestDriver, error) {
 	var srcVimrc, dstVimrc string
 	switch flav {
 	case govim.FlavorVim:
-		srcVimrc = filepath.Join(c.GovimPath, "cmd", "vimcollab", "config", "minimal.vimrc")
+		srcVimrc = filepath.Join(c.GovimPath, "config", "minimal.vimrc")
 		dstVimrc = filepath.Join(c.TestHomePath, ".vimrc")
 	case govim.FlavorGvim:
-		srcVimrc = filepath.Join(c.GovimPath, "cmd", "vimcollab", "config", "minimal.gvimrc")
+		srcVimrc = filepath.Join(c.GovimPath, "config", "minimal.gvimrc")
 		dstVimrc = filepath.Join(c.TestHomePath, ".gvimrc")
 	default:
 		return nil, fmt.Errorf("need to add vimrc behaviour for flavour %v", flav)

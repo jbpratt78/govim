@@ -1,5 +1,7 @@
 package types
 
+import "github.com/jbpratt78/vimcollab/internal/span"
+
 // TODO: we need to reflect somehow whether a buffer is file-based or not. A
 // preview window is not, for example.
 
@@ -40,6 +42,13 @@ func (b *Buffer) SetContents(byts []byte) {
 	b.contents = byts
 }
 
+// URI returns the b's Name as a span.URI, assuming it is a file.
+//
+// TODO: we should panic here is this is not a file-based buffer
+func (b *Buffer) URI() span.URI {
+	return span.URIFromPath(b.Name)
+}
+
 // Range represents a range within a Buffer. Create ranges using NewRange
 type Range struct {
 	Start Point
@@ -49,10 +58,10 @@ type Range struct {
 // Point represents a position within a Buffer
 type Point struct {
 	// line is Vim's line number within the buffer, i.e. 1-indexed
-	line int
+	Line int
 
 	// col is the Vim representation of column number, i.e.  1-based byte index
-	col int
+	Col int
 
 	// offset is the 0-index byte-offset
 	offset int

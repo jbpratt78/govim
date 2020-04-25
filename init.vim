@@ -1,5 +1,5 @@
 call plug#begin()
-Plug '/home/jbpratt/projects/govim'
+Plug '/home/jbpratt/projects/vimcollab'
 call plug#end()
 
 set nocompatible

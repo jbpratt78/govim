@@ -383,12 +383,12 @@ function s:install(force)
   if v:shell_error
     throw commit
   endif
-  let targetdir = s:plugindir."/cmd/vimcollab/.bin/".commit."/"
+  let targetdir = s:plugindir."/.bin/".commit."/"
   if a:force || $GOVIM_ALWAYS_INSTALL == "true" || !filereadable(targetdir."govim")
     echom "Installing vimcollab"
     call feedkeys(" ") " to prevent press ENTER to continue
     " TODO: make work on Windows
-    let install = system("env GO111MODULE=on GOBIN=".shellescape(targetdir)." go install github.com/jbpratt78/vimcollab/cmd/vimcollab 2>&1")
+    let install = system("env GO111MODULE=on GOBIN=".shellescape(targetdir)." go install github.com/jbpratt78/vimcollab 2>&1")
     if v:shell_error
       throw install
     endif
